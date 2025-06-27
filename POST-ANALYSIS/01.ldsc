@@ -1,0 +1,67 @@
+#!/bin/bash
+
+input_tissue="$1"
+DIR="/data1/liweizhuo/5UTR/3.1.ldsc/5usp"
+mkdir -p "${DIR}/2.annot"
+
+while IFS='\t' read -r line; do
+	tissue_name="${line}"
+	for chr in $(seq 1 22)
+	do
+	python2 /data1/liweizhuo/GWAS/ldsc/ldsc/make_annot.py --bed-file ${DIR}/1.bed/${tissue_name}.bed --bimfile /data1/liweizhuo/GWAS/ldsc/ref/1000G_EUR_Phase3_plink/1000G.EUR.QC.$chr.bim --annot-file ${DIR}/2.annot/${tissue_name}.chr$chr.annot.gz
+	python2 /data1/liweizhuo/GWAS/ldsc/ldsc/ldsc.py --l2 --bfile /data1/liweizhuo/GWAS/ldsc/ref/1000G_EUR_Phase3_plink/1000G.EUR.QC.$chr --ld-wind-cm 1 --annot ${DIR}/2.annot/${tissue_name}.chr$chr.annot.gz --thin-annot --out ${DIR}/2.annot/${tissue_name}.chr$chr --print-snps /data1/liweizhuo/GWAS/ldsc/ref/hm3_no_MHC.list.txt
+	done
+done < ${input_tissue}
+
+
+# 定义文件路径
+gene_file="/data1/liweizhuo/5UTR/3.ldsc/GWAS_sample_info.txt"
+DIR="/data1/liweizhuo/5UTR/3.1.ldsc/5usp"
+# 创建结果目录
+mkdir -p ${DIR}/4.cancer.res
+
+# 遍历GWAS数据文件中的每一行
+while IFS= read -r gwas_pt; do
+    trait=$(echo "$gwas_pt" | awk -F'/' '{print $NF}' | sed 's/.sumstats.gz//')
+    sumstats_file=$(echo "$gwas_pt")
+
+    mkdir -p ${DIR}/4.cancer.res/${trait}
+
+    # 遍历 tissue.txt 中的每个组织
+    while IFS= read -r tissue; do
+        # 构建注释文件路径
+        annot_file="${DIR}/2.annot/${tissue}.chr"
+        
+        # 构建输出文件路径
+        output_file="${DIR}/4.cancer.res/${trait}/${tissue}"
+
+        # 运行 ldsc.py 脚本
+        python2 /data1/liweizhuo/GWAS/ldsc/ldsc/ldsc.py \
+            --h2 "${sumstats_file}" \
+            --ref-ld-chr /data1/liweizhuo/GWAS/ldsc/ref/baseline_gene_MAF_LD.,"${annot_file}" \
+            --w-ld-chr /data1/liweizhuo/GWAS/ldsc/ref/1000G_Phase3_weights_hm3_no_MHC/weights.hm3_noMHC. \
+            --frqfile-chr /data1/liweizhuo/GWAS/ldsc/ref/1000G_Phase3_frq/1000G.EUR.QC. \
+            --overlap-annot \
+            --print-coefficients \
+            --print-delete-vals \
+            --out ${output_file}
+            #--print-cov \
+
+        # 提取性状名称
+        cancer=$(grep "$trait" $gene_file | cut -f2 | sed 's/ /_/g')
+        QTL_type="5uspQTL"
+
+        if [ -f ${output_file}.results ]; then
+        # 添加列名到表头
+            awk -v sample="$cancer" -v tissue=$tissue '
+                BEGIN{FS=OFS="\t"} 
+                NR==1 {$0=$0 "\tTumor\tTissue\tQTL"} 
+                NR>1 {$0=$0 "\t" sample "\t" tissue "\t5uspQTL"} {print}
+            ' "${output_file}.results" > "${output_file}.results.tmp"
+            mv "${output_file}.results.tmp" "${output_file}.results"
+        else
+            echo "Error: ${output_file}.results not found."
+        fi
+        echo "${ID}/${tissue} done!"
+    done < ${input_tissue}
+done  < /data1/liweizhuo/5UTR/3.ldsc/sumstats.dir.txt
