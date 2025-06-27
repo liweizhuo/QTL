@@ -1,0 +1,47 @@
+#!/bin/bash
+
+tissue_name="$1"
+DIR="/data1/liweizhuo/5UTR/2.fastqtl/${tissue_name}"
+mkdir -p "${DIR}"
+mkdir -p "${DIR}/bed_data"
+mkdir -p "${DIR}/scr"
+mkdir -p "${DIR}/result"
+
+# prepare genotype file
+awk 'BEGIN{OFS="\t"} /^#/ {print $0; next} {$1 = "chr"$1; print}' /data1/liweizhuo/5UTR/00.raw.data/3.genotype/3.PCA_vcf/${tissue_name}.vcf | sed 's/chr23/chrX/g'> ${DIR}/${tissue_name}.vcf
+bgzip -f ${DIR}/${tissue_name}.vcf -@ 6
+tabix -p vcf ${DIR}/${tissue_name}.vcf.gz 
+
+# prepare covariates file
+/data1/liweizhuo/5UTR/1.peer/cat_cov.sh ${tissue_name}
+cov="/data1/liweizhuo/5UTR/1.peer/${tissue_name}/${tissue_name}.final.cov"
+
+# prepare phenotype file 
+cp -r /data1/liweizhuo/5UTR/01.leafcutter/${tissue_name}/${tissue_name}.junction_revised/${tissue_name}* ${DIR}/bed_data
+for file in ${DIR}/bed_data/*
+do
+	awk 'NR==1 {for(i=5; i<=NF; i++) {split($i, arr, "-"); $i=arr[1]"-"arr[2]"_"arr[1]"-"arr[2]"_"arr[1]"-"arr[2]"_"arr[1]"-"arr[2]}; print} NR>1 {print}' ${file} > ${file}.modified
+	bgzip -f ${file}.modified -@ 4
+	tabix -p bed ${file}.modified.gz
+done
+
+# fastqtl 
+for i in ${DIR}/bed_data/*.modified.gz
+do
+	filename=$(basename ${i})
+	out=$(echo "$filename" | awk -F'[_.]' '{print $8}')
+	mkdir -p "${DIR}/result/${out}.result"
+	fastQTL --vcf ${DIR}/${tissue_name}.vcf.gz --bed ${i} --cov ${cov} --window 1e6 --ma-sample-threshold 10 --maf-threshold 0.01 --commands 10 ${DIR}/scr/${out}.commands.10.txt --out ${DIR}/result/${out}.result/${tissue_name}
+	while IFS= read -r line; do
+    		echo "Executing in background: $line"
+    		nohup sh -c "$line" > /dev/null 2>&1 &
+	done < ${DIR}/scr/${out}.commands.10.txt
+	wait 
+	cat ${DIR}/result/${out}.result/${tissue_name}.chr* > ${DIR}/result/${out}.out
+done
+echo "fastqtl done!"
+
+# cat output
+cat /data1/liweizhuo/5UTR/2.fastqtl/fastqtl.head ${DIR}/result/*out > ${DIR}/${tissue_name}.fastqtl.res
+
+echo "all done"
